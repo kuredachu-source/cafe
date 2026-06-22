@@ -1,0 +1,1601 @@
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import {
+  ShoppingCart, X, Plus, Minus, Coffee, ClipboardList, BarChart3,
+  UtensilsCrossed, MessageSquare, QrCode, Settings as SettingsIcon,
+  Check, Clock, Trash2, Pencil, Sun, Moon, Sparkles, ArrowLeft,
+  MessageCircle, Send, ShoppingBag, TrendingUp, Heart, Download, Copy,
+} from "lucide-react";
+import {
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend,
+} from "recharts";
+
+/* =========================================================================
+   ELGA CAFE — Dire Dawa, Ethiopia
+   Customer ordering + Staff terminal, sharing one live state tree so staff
+   actions reflect on the customer side instantly (the same role realtime
+   played in the original Supabase-backed app).
+========================================================================= */
+
+const LIGHT = {
+  bg: "#fff8eb", fg: "#372315", border: "#e4dbcd", card: "#fffcf5",
+  sidebar: "#fffcf5", sidebarAccent: "#f0e7db", primary: "#372315",
+  primaryFg: "#fff8eb", secondary: "#f0e7db", muted: "#ede7de",
+  mutedFg: "#7a6352", accent: "#e7b008", accentFg: "#26170d",
+  destructive: "#ef4343",
+};
+const DARK = {
+  bg: "#1e130b", fg: "#fff8eb", border: "#423024", card: "#25180e",
+  sidebar: "#25180e", sidebarAccent: "#423024", primary: "#e7b008",
+  primaryFg: "#26170d", secondary: "#423024", muted: "#32241b",
+  mutedFg: "#c9ba9c", accent: "#e7b008", accentFg: "#26170d",
+  destructive: "#a83a3a",
+};
+
+const SERIF = "'Georgia', 'Playfair Display', serif";
+const SANS = "'Segoe UI', 'Plus Jakarta Sans', sans-serif";
+
+const SEED_MENU = [
+  { id: 1, nameEn: "Macchiato", nameAm: "ማኪያቶ", description: "Espresso with a touch of steamed milk", price: 55, category: "Coffee", imageUrl: "https://images.unsplash.com/photo-1517701604599-bb29b565090c?w=400", available: true },
+  { id: 2, nameEn: "Buna", nameAm: "ቡና", description: "Traditional Ethiopian coffee", price: 40, category: "Coffee", imageUrl: "https://images.unsplash.com/photo-1509042239860-f550ce710b93?w=400", available: true },
+  { id: 3, nameEn: "Cappuccino", nameAm: "ካፑቺኖ", description: "Espresso with foamed milk", price: 70, category: "Coffee", imageUrl: "https://images.unsplash.com/photo-1572442388796-11668a67e53d?w=400", available: true },
+  { id: 4, nameEn: "Tea", nameAm: "ሻይ", description: "Black tea with spices", price: 25, category: "Drinks", imageUrl: "https://images.unsplash.com/photo-1597481499750-3e6b22637e12?w=400", available: true },
+  { id: 5, nameEn: "Shiro Firfir", nameAm: "ሽሮ ፍርፍር", description: "Spiced chickpea stew with injera", price: 180, category: "Food", imageUrl: "https://images.unsplash.com/photo-1567337710282-00832b415979?w=400", available: true },
+  { id: 6, nameEn: "Doro Wat", nameAm: "ዶሮ ወጥ", description: "Spicy chicken stew", price: 260, category: "Food", imageUrl: "https://images.unsplash.com/photo-1604329760661-e71dc83f8f26?w=400", available: true },
+  { id: 7, nameEn: "Cheesecake", nameAm: "ኬክ", description: "Slice of classic cheesecake", price: 120, category: "Dessert", imageUrl: "https://images.unsplash.com/photo-1565958011703-44f9829ba187?w=400", available: true },
+  { id: 8, nameEn: "Fresh Juice", nameAm: "ጁስ", description: "Mixed seasonal fruit juice", price: 80, category: "Drinks", imageUrl: "https://images.unsplash.com/photo-1622597467836-f3285f2131b8?w=400", available: true },
+];
+
+const DEFAULT_PAYMENT_METHODS = [
+  { id: "cbe", name: "Commercial Bank of Ethiopia (CBE)", account: "1000123456789", color: "#2563eb" },
+  { id: "telebirr", name: "Telebirr", account: "0911 234 567", color: "#16a34a" },
+  { id: "ebirr", name: "E-birr", account: "0922 345 678", color: "#ea580c" },
+];
+const CASH_METHOD = { id: "cash", name: "Cash", account: "Pay at the counter", color: "#6b7280" };
+
+const SENTIMENT_OPTIONS = [
+  { emoji: "😡", label: "Very Unhappy", score: 1 },
+  { emoji: "😐", label: "Neutral", score: 2 },
+  { emoji: "🙂", label: "Happy", score: 3 },
+  { emoji: "😍", label: "Loved it", score: 4 },
+];
+const SENT_SCORE = Object.fromEntries(SENTIMENT_OPTIONS.map((s) => [s.emoji, s.score]));
+
+const STATUS_FLOW = ["pending", "preparing", "ready", "served"];
+const STATUS_INFO = {
+  pending: { label: "Pending", dot: "#d97706" },
+  preparing: { label: "Preparing", dot: "#2563eb" },
+  ready: { label: "Ready", dot: "#16a34a" },
+  served: { label: "Served", dot: "#7a6352" },
+};
+
+// Simple "goes well together" pairing table — drives the cart suggestion engine
+const PAIRINGS = { Coffee: "Dessert", Food: "Drinks", Dessert: "Coffee", Drinks: "Food" };
+
+let _id = 1000;
+const nextId = () => (_id += 1);
+
+function formatEthTime(d) {
+  try {
+    return new Intl.DateTimeFormat("en-GB", { timeZone: "Africa/Addis_Ababa", hour: "2-digit", minute: "2-digit", hour12: false }).format(d) + " EAT";
+  } catch { return d.toLocaleTimeString(); }
+}
+function formatEthDateTime(d) {
+  try {
+    return new Intl.DateTimeFormat("en-GB", { timeZone: "Africa/Addis_Ababa", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(d) + " EAT";
+  } catch { return d.toLocaleString(); }
+}
+function periodStart(period) {
+  const d = new Date();
+  if (period === "day") d.setDate(d.getDate() - 1);
+  else if (period === "week") d.setDate(d.getDate() - 7);
+  else if (period === "month") d.setMonth(d.getMonth() - 1);
+  else d.setFullYear(d.getFullYear() - 1);
+  return d;
+}
+
+/* ----------------------------------------------------------------------
+   Self-contained QR code encoder — no network calls, no external image
+   APIs. Fixed to Version 6 (41x41), Error Correction Level M, Mask 0,
+   Byte mode. Capacity: 106 bytes of UTF-8 payload. Verified against an
+   independent QR decoder during development to confirm real scannability.
+------------------------------------------------------------------------ */
+const QR_VERSION = 6;
+const QR_MODULE_COUNT = QR_VERSION * 4 + 17; // 41
+const QR_EC_BLOCKS = 4;
+const QR_DATA_PER_BLOCK = 27;
+const QR_EC_BYTES_PER_BLOCK = 16;
+const QR_TOTAL_DATA_BYTES = QR_EC_BLOCKS * QR_DATA_PER_BLOCK; // 108
+const QR_ALIGN_POS = [6, 34];
+const QR_G15 = 0x537;
+const QR_G15_MASK = 0x5412;
+const QR_MAX_PAYLOAD_BYTES = QR_TOTAL_DATA_BYTES - 2; // minus mode+length overhead ≈ 106
+
+const QR_EXP_TABLE = new Array(256);
+const QR_LOG_TABLE = new Array(256);
+(function initQRGaloisTables() {
+  for (let i = 0; i < 8; i++) QR_EXP_TABLE[i] = 1 << i;
+  for (let i = 8; i < 256; i++) {
+    QR_EXP_TABLE[i] = QR_EXP_TABLE[i - 4] ^ QR_EXP_TABLE[i - 5] ^ QR_EXP_TABLE[i - 6] ^ QR_EXP_TABLE[i - 8];
+  }
+  for (let i = 0; i < 255; i++) QR_LOG_TABLE[QR_EXP_TABLE[i]] = i;
+})();
+function qrGexp(n) { let m = n % 255; if (m < 0) m += 255; return QR_EXP_TABLE[m]; }
+function qrGlog(n) { return QR_LOG_TABLE[n]; }
+function qrPolyMul(a, b) {
+  const result = new Array(a.length + b.length - 1).fill(0);
+  for (let i = 0; i < a.length; i++) for (let j = 0; j < b.length; j++) {
+    if (a[i] === 0 || b[j] === 0) continue;
+    result[i + j] ^= qrGexp(qrGlog(a[i]) + qrGlog(b[j]));
+  }
+  return result;
+}
+function qrRsGeneratorPoly(ecCount) {
+  let g = [1];
+  for (let i = 0; i < ecCount; i++) g = qrPolyMul(g, [1, qrGexp(i)]);
+  return g;
+}
+function qrRsEncodeBlock(dataBytes, ecCount) {
+  const generator = qrRsGeneratorPoly(ecCount);
+  const msg = dataBytes.concat(new Array(ecCount).fill(0));
+  for (let i = 0; i < dataBytes.length; i++) {
+    const coef = msg[i];
+    if (coef !== 0) {
+      const lc = qrGlog(coef);
+      for (let j = 0; j < generator.length; j++) if (generator[j] !== 0) msg[i + j] ^= qrGexp(qrGlog(generator[j]) + lc);
+    }
+  }
+  return msg.slice(dataBytes.length);
+}
+function qrBchDigit(data) { let d = 0; while (data !== 0) { d++; data >>>= 1; } return d; }
+function qrGetBCHTypeInfo(data) {
+  let d = data << 10;
+  while (qrBchDigit(d) - qrBchDigit(QR_G15) >= 0) d ^= (QR_G15 << (qrBchDigit(d) - qrBchDigit(QR_G15)));
+  return ((data << 10) | d) ^ QR_G15_MASK;
+}
+class QRBitBuffer {
+  constructor() { this.buffer = []; this.length = 0; }
+  put(num, len) { for (let i = 0; i < len; i++) this.putBit(((num >>> (len - i - 1)) & 1) === 1); }
+  putBit(bit) {
+    const idx = Math.floor(this.length / 8);
+    if (this.buffer.length <= idx) this.buffer.push(0);
+    if (bit) this.buffer[idx] |= (0x80 >>> (this.length % 8));
+    this.length++;
+  }
+}
+function qrBuildDataCodewords(bytes) {
+  const buf = new QRBitBuffer();
+  buf.put(0b0100, 4);
+  buf.put(bytes.length, 8);
+  for (const b of bytes) buf.put(b, 8);
+  const totalBits = QR_TOTAL_DATA_BYTES * 8;
+  if (buf.length > totalBits) throw new Error("QR_OVERFLOW");
+  if (buf.length + 4 <= totalBits) buf.put(0, 4);
+  while (buf.length % 8 !== 0) buf.putBit(false);
+  let toggle = true;
+  while (buf.length < totalBits) { buf.put(toggle ? 0xec : 0x11, 8); toggle = !toggle; }
+  return buf.buffer.slice(0, QR_TOTAL_DATA_BYTES);
+}
+function qrBuildFinalCodewords(dataCodewords) {
+  const blocks = [];
+  for (let i = 0; i < QR_EC_BLOCKS; i++) {
+    const slice = dataCodewords.slice(i * QR_DATA_PER_BLOCK, (i + 1) * QR_DATA_PER_BLOCK);
+    blocks.push({ data: slice, ec: qrRsEncodeBlock(slice, QR_EC_BYTES_PER_BLOCK) });
+  }
+  const out = [];
+  for (let i = 0; i < QR_DATA_PER_BLOCK; i++) for (let b = 0; b < QR_EC_BLOCKS; b++) out.push(blocks[b].data[i]);
+  for (let i = 0; i < QR_EC_BYTES_PER_BLOCK; i++) for (let b = 0; b < QR_EC_BLOCKS; b++) out.push(blocks[b].ec[i]);
+  return out;
+}
+function qrMakeMatrix(finalCodewords) {
+  const n = QR_MODULE_COUNT;
+  const modules = Array.from({ length: n }, () => new Array(n).fill(null));
+  function setFinder(row, col) {
+    for (let r = -1; r <= 7; r++) {
+      if (row + r <= -1 || n <= row + r) continue;
+      for (let c = -1; c <= 7; c++) {
+        if (col + c <= -1 || n <= col + c) continue;
+        const dark = (0 <= r && r <= 6 && (c === 0 || c === 6)) || (0 <= c && c <= 6 && (r === 0 || r === 6)) || (2 <= r && r <= 4 && 2 <= c && c <= 4);
+        modules[row + r][col + c] = dark;
+      }
+    }
+  }
+  setFinder(0, 0); setFinder(n - 7, 0); setFinder(0, n - 7);
+  for (const row of QR_ALIGN_POS) for (const col of QR_ALIGN_POS) {
+    if (modules[row][col] !== null) continue;
+    for (let r = -2; r <= 2; r++) for (let c = -2; c <= 2; c++) {
+      modules[row + r][col + c] = (r === -2 || r === 2 || c === -2 || c === 2 || (r === 0 && c === 0));
+    }
+  }
+  for (let r = 8; r < n - 8; r++) if (modules[r][6] === null) modules[r][6] = (r % 2 === 0);
+  for (let c = 8; c < n - 8; c++) if (modules[6][c] === null) modules[6][c] = (c % 2 === 0);
+  const bits = qrGetBCHTypeInfo(0); // EC level M (bits=0) + mask pattern 0
+  for (let i = 0; i < 15; i++) {
+    const mod = ((bits >> i) & 1) === 1;
+    if (i < 6) modules[i][8] = mod; else if (i < 8) modules[i + 1][8] = mod; else modules[n - 15 + i][8] = mod;
+  }
+  for (let i = 0; i < 15; i++) {
+    const mod = ((bits >> i) & 1) === 1;
+    if (i < 8) modules[8][n - i - 1] = mod; else if (i < 9) modules[8][15 - i] = mod; else modules[8][15 - i - 1] = mod;
+  }
+  modules[n - 8][8] = true;
+  let inc = -1, row = n - 1, bitIndex = 7, byteIndex = 0;
+  for (let col = n - 1; col > 0; col -= 2) {
+    if (col === 6) col -= 1;
+    while (true) {
+      for (let c = 0; c < 2; c++) {
+        if (modules[row][col - c] === null) {
+          let dark = byteIndex < finalCodewords.length && ((finalCodewords[byteIndex] >>> bitIndex) & 1) === 1;
+          if ((row + (col - c)) % 2 === 0) dark = !dark; // mask pattern 0
+          modules[row][col - c] = dark;
+          bitIndex--;
+          if (bitIndex === -1) { byteIndex++; bitIndex = 7; }
+        }
+      }
+      row += inc;
+      if (row < 0 || n <= row) { row -= inc; inc = -inc; break; }
+    }
+  }
+  return modules;
+}
+function generateQRMatrix(text) {
+  const bytes = Array.from(new TextEncoder().encode(text));
+  if (bytes.length > QR_MAX_PAYLOAD_BYTES) throw new Error("QR_OVERFLOW");
+  return qrMakeMatrix(qrBuildFinalCodewords(qrBuildDataCodewords(bytes)));
+}
+function qrMatrixToPngDataUrl(matrix, { scale = 10, quiet = 4, dark = "#372315", light = "#fffcf5", badgeText, accent = "#e7b008", accentFg = "#26170d" } = {}) {
+  const n = matrix.length;
+  const size = (n + quiet * 2) * scale;
+  const canvas = document.createElement("canvas");
+  canvas.width = size; canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = light; ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = dark;
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) {
+    if (matrix[r][c]) ctx.fillRect((c + quiet) * scale, (r + quiet) * scale, scale, scale);
+  }
+  if (badgeText) {
+    const cx = size / 2, cy = size / 2, radius = size * 0.105;
+    ctx.fillStyle = accent;
+    ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.fill();
+    ctx.lineWidth = scale * 0.6; ctx.strokeStyle = light; ctx.stroke();
+    ctx.fillStyle = accentFg;
+    ctx.font = `bold ${Math.round(radius * 0.62)}px sans-serif`;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(badgeText, cx, cy);
+  }
+  return canvas.toDataURL("image/png");
+}
+
+function QRCodeSVG({ value, size = 220, dark = "#372315", light = "#fffcf5" }) {
+  const matrix = useMemo(() => { try { return generateQRMatrix(value); } catch { return null; } }, [value]);
+  if (!matrix) return <div className="flex items-center justify-center text-xs text-center px-4" style={{ width: size, height: size, color: dark }}>QR data too long — shorten the table identifier.</div>;
+  const n = matrix.length, quiet = 4, vb = n + quiet * 2;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${vb} ${vb}`} shapeRendering="crispEdges">
+      <rect width={vb} height={vb} fill={light} />
+      {matrix.map((rowArr, r) => rowArr.map((cell, c) => cell ? <rect key={`${r}-${c}`} x={c + quiet} y={r + quiet} width={1} height={1} fill={dark} /> : null))}
+    </svg>
+  );
+}
+
+/* ----------------------------- Smart algorithms ----------------------------- */
+// Rule-based insight engine — no external calls, just pattern-reading over the
+// live order/sentiment data so the dashboard says something useful as it fills up.
+function computeInsights(orders, sentimentLogs, menuItems) {
+  if (orders.length === 0) {
+    return ["Place a few orders from the Customer Menu tab and this panel will start spotting patterns automatically."];
+  }
+  const insights = [];
+  const hourCounts = new Array(24).fill(0);
+  const catRevenue = new Map();
+  for (const o of orders) {
+    hourCounts[new Date(o.createdAt).getHours()] += 1;
+    for (const it of o.items) {
+      const cat = menuItems.find((m) => m.id === it.menuItemId)?.category || "Other";
+      catRevenue.set(cat, (catRevenue.get(cat) || 0) + it.quantity * it.unitPrice);
+    }
+  }
+  const busiestHour = hourCounts.indexOf(Math.max(...hourCounts));
+  insights.push(`Most orders land around ${busiestHour.toString().padStart(2, "0")}:00 — that's a good window to add extra staff on the floor.`);
+
+  const totalRev = orders.reduce((s, o) => s + o.totalAmount, 0);
+  const topCat = [...catRevenue.entries()].sort((a, b) => b[1] - a[1])[0];
+  if (topCat && totalRev > 0) {
+    const pct = Math.round((topCat[1] / totalRev) * 100);
+    insights.push(`${topCat[0]} is driving ${pct}% of revenue right now — worth featuring near the top of the menu.`);
+  }
+  if (sentimentLogs.length > 0) {
+    const scores = sentimentLogs.map((s) => SENT_SCORE[s.emoji] || 0);
+    const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+    const positive = scores.filter((s) => s >= 3).length;
+    const pct = Math.round((positive / scores.length) * 100);
+    insights.push(avg >= 3
+      ? `${pct}% of feedback is positive (🙂 or 😍) — whatever the floor is doing today is working.`
+      : `Only ${pct}% of feedback is positive — worth checking in with tables before they leave.`);
+  }
+  return insights;
+}
+
+// Pairing suggestion for the cart — looks at categories already in the cart and
+// proposes one complementary, available item not already added.
+function computeSuggestion(cart, menuItems) {
+  const cartIds = new Set(cart.map((c) => c.menuItemId));
+  const cartCats = new Set(cart.map((c) => menuItems.find((m) => m.id === c.menuItemId)?.category).filter(Boolean));
+  for (const cat of cartCats) {
+    const want = PAIRINGS[cat];
+    const candidate = menuItems.find((m) => m.available && m.category === want && !cartIds.has(m.id));
+    if (candidate) return candidate;
+  }
+  return menuItems.find((m) => m.available && !cartIds.has(m.id)) || null;
+}
+
+/* ----------------------------------- UI kit ----------------------------------- */
+
+function Button({ children, onClick, variant = "primary", disabled, className = "", T }) {
+  const styles = {
+    primary: { background: T.primary, color: T.primaryFg },
+    outline: { background: "transparent", color: T.fg, border: `1px solid ${T.border}` },
+    accent: { background: T.accent, color: T.accentFg },
+    ghost: { background: T.secondary, color: T.fg },
+    danger: { background: "transparent", color: T.destructive, border: `1px solid ${T.destructive}` },
+  };
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`rounded-lg px-4 py-2 text-sm font-semibold transition-all active:scale-95 disabled:opacity-50 disabled:active:scale-100 flex items-center justify-center gap-1.5 ${className}`}
+      style={styles[variant]}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Modal({ open, onClose, title, children, maxW = "max-w-md", T }) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4" style={{ background: "rgba(15,9,4,0.5)" }} onClick={onClose}>
+      <div className={`w-full ${maxW} max-h-[88vh] flex flex-col rounded-t-2xl sm:rounded-2xl overflow-hidden`} style={{ background: T.card, border: `1px solid ${T.border}` }} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 shrink-0" style={{ borderBottom: `1px solid ${T.border}` }}>
+          <h3 className="text-lg font-bold" style={{ fontFamily: SERIF, color: T.fg }}>{title}</h3>
+          <button onClick={onClose} style={{ color: T.mutedFg }}><X size={20} /></button>
+        </div>
+        <div className="px-5 py-4 overflow-y-auto" style={{ color: T.fg }}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmModal({ open, onClose, onConfirm, title, message, T }) {
+  return (
+    <Modal open={open} onClose={onClose} title={title} maxW="max-w-sm" T={T}>
+      <p className="text-sm mb-5" style={{ color: T.mutedFg }}>{message}</p>
+      <div className="flex gap-3">
+        <Button T={T} variant="outline" className="flex-1" onClick={onClose}>Cancel</Button>
+        <Button T={T} variant="danger" className="flex-1" onClick={() => { onConfirm(); onClose(); }}>Delete</Button>
+      </div>
+    </Modal>
+  );
+}
+
+function StatCard({ icon, label, value, sub, T, accentColor }) {
+  return (
+    <div className="rounded-xl p-4" style={{ background: T.card, border: `1px solid ${T.border}` }}>
+      <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide" style={{ color: T.mutedFg }}>
+        {icon}{label}
+      </div>
+      <p className="text-2xl font-bold mt-1.5" style={{ fontFamily: SERIF, color: accentColor || T.fg }}>{value}</p>
+      {sub && <p className="text-xs mt-0.5" style={{ color: T.mutedFg }}>{sub}</p>}
+    </div>
+  );
+}
+
+function Switch({ on, onClick, T }) {
+  return (
+    <button
+      onClick={onClick}
+      className="w-10 h-6 rounded-full relative transition-colors shrink-0"
+      style={{ background: on ? "#16a34a" : T.muted }}
+    >
+      <span className="absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all" style={{ left: on ? 18 : 2 }} />
+    </button>
+  );
+}
+
+/* ================================ LANDING ================================ */
+
+function Landing({ onEnter, T }) {
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center text-center px-8" style={{
+      background: "radial-gradient(ellipse at 60% 40%, #3d1f08 0%, #1e0e04 40%, #0e0602 100%)"
+    }}>
+      <style>{`
+        @keyframes lgSteam { 0%,100%{opacity:0;transform:translateY(0)} 40%{opacity:.4} 80%{opacity:0;transform:translateY(-32px)} }
+      `}</style>
+
+      {/* Coffee cup logo */}
+      <div className="relative mb-6">
+        <div className="w-24 h-24 rounded-full flex items-center justify-center shadow-2xl" style={{
+          background: "linear-gradient(145deg, #d4920e, #a06a0a)"
+        }}>
+          {/* Steam */}
+          <div className="absolute flex gap-1.5" style={{ top: -22, left: "50%", transform: "translateX(-50%)" }}>
+            {[0, 0.4, 0.8].map((d, i) => (
+              <div key={i} className="rounded-full" style={{
+                width: 4, height: i === 1 ? 16 : 20,
+                background: "rgba(253,243,223,0.4)",
+                animation: `lgSteam 2.4s ease-in-out ${d}s infinite`
+              }} />
+            ))}
+          </div>
+          <span style={{ fontSize: 42 }}>☕</span>
+        </div>
+      </div>
+
+      {/* Brand */}
+      <h1 className="font-bold mb-1" style={{
+        fontFamily: SERIF,
+        fontSize: "clamp(2.6rem,7vw,4rem)",
+        color: "#fdf3df",
+        textShadow: "0 2px 20px rgba(0,0,0,0.5)"
+      }}>
+        ELGA CAFE
+      </h1>
+
+      <p className="mb-10 font-semibold uppercase" style={{
+        color: "#c8891a",
+        fontSize: "0.68rem",
+        letterSpacing: "0.32em"
+      }}>
+        Dire Dawa · Ethiopia
+      </p>
+
+      {/* Buttons */}
+      <div className="flex flex-col gap-3 w-full max-w-xs">
+        <button
+          onClick={() => onEnter("customer")}
+          className="w-full rounded-xl py-4 font-semibold text-sm active:scale-95 transition-all"
+          style={{
+            background: "linear-gradient(135deg, #d4920e, #a06a0a)",
+            color: "#fdf3df",
+            boxShadow: "0 4px 20px rgba(180,120,10,0.4)"
+          }}
+        >
+          Customer Menu
+        </button>
+
+        <button
+          onClick={() => onEnter("staff")}
+          className="w-full rounded-xl py-4 font-semibold text-sm active:scale-95 transition-all"
+          style={{
+            background: "transparent",
+            color: "#fdf3df",
+            border: "1px solid rgba(200,137,26,0.35)"
+          }}
+        >
+          Staff Terminal
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================= CUSTOMER MENU ============================= */
+
+function IsraelChat({ T }) {
+  const [open, setOpen] = useState(false);
+  const [messages, setMessages] = useState([
+    { role: "assistant", content: "እንኳን ወደ ሆሊ ካፌ በደህና መጡ! እኔ እስራኤል በላይ ነኝ። ምናሌያችን ከምን ላስተዋውቅዎ?" },
+  ]);
+  const [input, setInput] = useState("");
+  const endRef = useRef(null);
+
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  function reply(text) {
+    const t = text.toLowerCase();
+    if (t.includes("coffee") || t.includes("ቡና") || t.includes("buna")) return "We pour Buna, Macchiato and Cappuccino — all brewed fresh. The Buna (ETB 40) is our signature.";
+    if (t.includes("price") || t.includes("ዋጋ")) return "Prices run from ETB 25 for tea up to ETB 260 for Doro Wat. Tap any item to add it to your cart!";
+    if (t.includes("payment") || t.includes("pay")) return "We accept CBE, Telebirr, E-birr, or cash at the counter — you'll choose at checkout.";
+    return "ይቅርታ፣ ለበለጠ መረጃ ምናሌውን ይመልከቱ! Take a look at the menu above — I'm happy to help you pick something.";
+  }
+
+  function send() {
+    if (!input.trim()) return;
+    const userMsg = { role: "user", content: input.trim() };
+    setMessages((m) => [...m, userMsg]);
+    setInput("");
+    setTimeout(() => setMessages((m) => [...m, { role: "assistant", content: reply(userMsg.content) }]), 500);
+  }
+
+  return (
+    <div className="fixed bottom-5 right-5 z-40 flex flex-col items-end gap-3">
+      {open && (
+        <div className="w-80 rounded-2xl shadow-2xl flex flex-col overflow-hidden" style={{ height: 420, background: T.card, border: `1px solid ${T.border}` }}>
+          <div className="px-4 py-3 flex items-center gap-3" style={{ background: T.primary, color: T.primaryFg }}>
+            <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0" style={{ background: T.accent, color: T.accentFg }}>IB</div>
+            <div className="flex-1 min-w-0">
+              <p className="font-bold text-sm leading-tight" style={{ fontFamily: SERIF }}>እስራኤል በላይ</p>
+              <p className="text-xs opacity-60">Israel Belay · AI Hostess</p>
+            </div>
+            <button onClick={() => setOpen(false)}><X size={18} /></button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-3">
+            {messages.map((m, i) => (
+              <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div className="max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed" style={m.role === "user" ? { background: T.primary, color: T.primaryFg } : { background: T.secondary, color: T.fg }}>
+                  {m.content}
+                </div>
+              </div>
+            ))}
+            <div ref={endRef} />
+          </div>
+          <div className="p-3 flex gap-2" style={{ borderTop: `1px solid ${T.border}` }}>
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && send()}
+              placeholder="ይጻፉ..."
+              className="flex-1 text-sm rounded-xl px-3 py-2 outline-none"
+              style={{ background: T.secondary, color: T.fg }}
+            />
+            <button onClick={send} className="rounded-xl px-3 py-2" style={{ background: T.primary, color: T.primaryFg }}><Send size={16} /></button>
+          </div>
+        </div>
+      )}
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-16 h-16 rounded-full shadow-xl flex items-center justify-center active:scale-95 transition-all relative"
+        style={{ background: "linear-gradient(135deg,#c8891a,#a06010)" }}
+      >
+        {open ? <X size={22} className="text-white" /> : <MessageCircle size={22} className="text-white" />}
+        {!open && <span className="absolute -top-1 -right-1 text-[9px] font-bold rounded-full px-1.5 py-0.5" style={{ background: T.primary, color: T.primaryFg }}>AI</span>}
+      </button>
+    </div>
+  );
+}
+
+function CustomerMenu({ menuItems, orders, paymentMethods, onCreateOrder, onAddSentiment, tableId, onBack, T }) {
+  const [intro, setIntro] = useState(true);
+  const [category, setCategory] = useState("All");
+  const [cart, setCart] = useState([]);
+  const [cartOpen, setCartOpen] = useState(false);
+  const [step, setStep] = useState("cart");
+  const [payment, setPayment] = useState(null);
+  const [lastOrderId, setLastOrderId] = useState(null);
+  const [sentimentOpen, setSentimentOpen] = useState(false);
+  const ratedOrders = useRef(new Set());
+
+  useEffect(() => { const t = setTimeout(() => setIntro(false), 1800); return () => clearTimeout(t); }, []);
+
+  // O(1) quantity lookup — no .find() on every card render
+  const cartMap = useMemo(() => {
+    const m = new Map();
+    for (const c of cart) m.set(c.menuItemId, c.quantity);
+    return m;
+  }, [cart]);
+
+  const categories = useMemo(() => ["All", ...Array.from(new Set(menuItems.map((m) => m.category)))], [menuItems]);
+  const visible = useMemo(() => menuItems.filter((m) => m.available && (category === "All" || m.category === category)), [menuItems, category]);
+  const trackedOrder = orders.find((o) => o.id === lastOrderId);
+  const allPaymentMethods = useMemo(() => [...paymentMethods, CASH_METHOD], [paymentMethods]);
+
+  useEffect(() => {
+    if (trackedOrder?.status === "served" && !ratedOrders.current.has(trackedOrder.id)) {
+      ratedOrders.current.add(trackedOrder.id);
+      setSentimentOpen(true);
+    }
+  }, [trackedOrder?.status]);
+
+  const addToCart = useCallback((item) => {
+    setCart((c) => {
+      const existing = c.find((x) => x.menuItemId === item.id);
+      if (existing) return c.map((x) => x.menuItemId === item.id ? { ...x, quantity: x.quantity + 1 } : x);
+      return [...c, { menuItemId: item.id, nameEn: item.nameEn, nameAm: item.nameAm, price: item.price, quantity: 1 }];
+    });
+  }, []);
+
+  const updateQty = useCallback((id, delta) => {
+    setCart((c) => c.map((it) => it.menuItemId === id ? { ...it, quantity: it.quantity + delta } : it).filter((it) => it.quantity > 0));
+  }, []);
+
+  function qtyOf(id) { return cartMap.get(id) || 0; }
+
+  const cartCount = cart.reduce((s, i) => s + i.quantity, 0);
+  const cartTotal = cart.reduce((s, i) => s + i.price * i.quantity, 0);
+  const suggestion = useMemo(() => (cart.length > 0 ? computeSuggestion(cart, menuItems) : null), [cart, menuItems]);
+
+  function placeOrder() {
+    const order = onCreateOrder(tableId, cart, payment);
+    setLastOrderId(order.id);
+    setCart([]); setPayment(null); setStep("cart"); setCartOpen(false);
+  }
+  const selectedPmLabel = allPaymentMethods.find((p) => p.id === payment)?.name || "Not selected";
+
+  return (
+    <div className="min-h-screen" style={{ background: T.bg, color: T.fg, fontFamily: SANS }}>
+      {intro && (
+        <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center text-center cursor-pointer px-8" style={{ background: "linear-gradient(160deg,#1c0e05 0%,#2d1a08 50%,#1a0d03 100%)" }} onClick={() => setIntro(false)}>
+          <div className="w-20 h-20 rounded-full flex items-center justify-center text-4xl shadow-2xl mb-5" style={{ background: "linear-gradient(135deg,#c8891a,#a06010)" }}>☕</div>
+          <h1 className="text-4xl font-bold mb-1" style={{ fontFamily: SERIF, color: "#fdf3df" }}>ELGA CAFE</h1>
+          <p className="text-xs font-semibold tracking-widest uppercase mb-6" style={{ color: "#c8891a" }}>Dire Dawa · Ethiopia</p>
+          <p className="text-amber-100/80 text-sm max-w-xs">እንኳን ወደ ሆሊ ካፌ በደህና መጡ! ለመቀጠል ይጫኑ</p>
+        </div>
+      )}
+
+      <header className="sticky top-0 z-30 px-5 py-3.5 flex items-center justify-between" style={{ background: T.card, borderBottom: `1px solid ${T.border}` }}>
+        <button onClick={onBack} className="p-1.5 -ml-1.5 rounded-lg" style={{ color: T.mutedFg }}><ArrowLeft size={18} /></button>
+        <div className="text-center">
+          <h1 className="text-xl font-bold leading-tight" style={{ fontFamily: SERIF }}>ELGA CAFE</h1>
+          <p className="text-[10px] font-semibold tracking-[0.25em]" style={{ color: T.mutedFg }}>DIRE DAWA</p>
+        </div>
+        <button onClick={() => { setCartOpen(true); setStep("cart"); }} className="relative rounded-full px-4 py-2 flex items-center gap-2 text-sm font-semibold" style={{ background: T.accent, color: T.accentFg }}>
+          <ShoppingCart size={16} /> Cart
+          {cartCount > 0 && <span className="absolute -top-1.5 -right-1.5 text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center" style={{ background: T.destructive, color: "#fff" }}>{cartCount}</span>}
+        </button>
+      </header>
+
+      {trackedOrder && trackedOrder.status !== "served" && (
+        <div className="px-4 pt-3 max-w-5xl mx-auto">
+          <div className="rounded-xl px-4 py-3 flex items-center gap-3" style={{ background: T.secondary, border: `1px solid ${T.border}` }}>
+            <span className="w-2.5 h-2.5 rounded-full shrink-0 animate-pulse" style={{ background: STATUS_INFO[trackedOrder.status].dot }} />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold">Order #{trackedOrder.id} · {STATUS_INFO[trackedOrder.status].label}</p>
+              <p className="text-xs" style={{ color: T.mutedFg }}>Table {trackedOrder.tableId} · ETB {trackedOrder.totalAmount.toFixed(0)}</p>
+            </div>
+            <Clock size={16} style={{ color: T.mutedFg }} />
+          </div>
+        </div>
+      )}
+
+      <div className="px-4 pt-4 flex gap-2 overflow-x-auto pb-1 max-w-5xl mx-auto">
+        {categories.map((c) => (
+          <button key={c} onClick={() => setCategory(c)} className="shrink-0 text-sm font-medium px-3.5 py-1.5 rounded-full transition-colors" style={category === c ? { background: T.primary, color: T.primaryFg } : { background: T.secondary, color: T.fg }}>{c}</button>
+        ))}
+      </div>
+
+      <main className="px-4 py-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 max-w-5xl mx-auto">
+        {visible.map((item) => {
+          const qty = qtyOf(item.id);
+          const isBase64 = item.imageUrl?.startsWith("data:");
+          return (
+            <div key={item.id} className="rounded-xl overflow-hidden flex flex-col" style={{ background: T.card, border: `1px solid ${T.border}` }}>
+              {/* Image — full display, no cropping for uploaded photos */}
+              <div className="w-full relative" style={{ background: T.muted, minHeight: 140 }}>
+                <img
+                  src={item.imageUrl}
+                  alt={item.nameEn}
+                  loading="lazy"
+                  style={{
+                    width: "100%",
+                    height: 140,
+                    objectFit: isBase64 ? "contain" : "cover",
+                    objectPosition: "center",
+                    display: "block",
+                    background: T.muted,
+                  }}
+                />
+                {/* Category badge */}
+                <span className="absolute top-2 left-2 text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: "rgba(0,0,0,0.55)", color: "#fff" }}>
+                  {item.category}
+                </span>
+              </div>
+              <div className="p-3 flex flex-col gap-1 flex-1">
+                <p className="font-semibold text-sm leading-tight" style={{ fontFamily: SERIF }}>{item.nameEn}</p>
+                <p className="text-xs" style={{ color: T.mutedFg }}>{item.nameAm}</p>
+                <p className="font-bold text-sm mt-auto pt-1" style={{ color: T.accent }}>ETB {item.price.toFixed(0)}</p>
+                {qty === 0 ? (
+                  <button
+                    onClick={() => addToCart(item)}
+                    className="mt-2 w-full rounded-lg py-1.5 text-sm font-medium active:scale-95 transition-transform"
+                    style={{ background: T.primary, color: T.primaryFg }}
+                  >
+                    Add to Cart
+                  </button>
+                ) : (
+                  <div className="mt-2 flex items-center justify-between rounded-lg px-2 py-1" style={{ background: T.secondary }}>
+                    <button onClick={() => updateQty(item.id, -1)} className="p-1 active:scale-90 transition-transform"><Minus size={14} /></button>
+                    <span className="font-bold text-sm">{qty}</span>
+                    <button onClick={() => updateQty(item.id, 1)} className="p-1 active:scale-90 transition-transform"><Plus size={14} /></button>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {visible.length === 0 && <p className="col-span-full text-center py-10 text-sm" style={{ color: T.mutedFg }}>No items available in this category right now.</p>}
+      </main>
+
+      <footer className="px-4 py-6 text-center text-xs" style={{ color: T.mutedFg }}>© ELGA CAFE · Dire Dawa, Ethiopia</footer>
+
+      <Modal T={T} open={cartOpen} onClose={() => setCartOpen(false)} title={step === "cart" ? "Your Order" : step === "payment" ? "Choose Payment" : "Confirm Order"}>
+        {step === "cart" && (
+          <div className="flex flex-col gap-4">
+            {cart.length === 0 ? (
+              <p className="text-center py-8 text-sm" style={{ color: T.mutedFg }}>Your cart is empty</p>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  {cart.map((item) => (
+                    <div key={item.menuItemId} className="flex items-center gap-3 rounded-xl p-3" style={{ background: T.secondary }}>
+                      <div className="flex-1">
+                        <p className="font-medium text-sm">{item.nameEn}</p>
+                        <p className="font-bold text-sm" style={{ color: T.accent }}>ETB {(item.price * item.quantity).toFixed(0)}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => updateQty(item.menuItemId, -1)} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: T.muted }}><Minus size={12} /></button>
+                        <span className="w-4 text-center font-bold text-sm">{item.quantity}</span>
+                        <button onClick={() => updateQty(item.menuItemId, 1)} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: T.primary, color: T.primaryFg }}><Plus size={12} /></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {suggestion && (
+                  <div className="rounded-xl p-3 flex items-center gap-3" style={{ background: T.bg, border: `1px dashed ${T.border}` }}>
+                    <Sparkles size={16} style={{ color: T.accent }} className="shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold" style={{ color: T.mutedFg }}>Goes well with your order</p>
+                      <p className="text-sm font-medium truncate">{suggestion.nameEn} · ETB {suggestion.price.toFixed(0)}</p>
+                    </div>
+                    <Button T={T} variant="ghost" className="px-3 py-1.5 text-xs shrink-0" onClick={() => addToCart(suggestion)}>Add</Button>
+                  </div>
+                )}
+
+                <div className="pt-3" style={{ borderTop: `1px solid ${T.border}` }}>
+                  <div className="flex justify-between font-bold text-lg mb-4"><span>Total</span><span style={{ color: T.accent }}>ETB {cartTotal.toFixed(0)}</span></div>
+                  <Button T={T} className="w-full" onClick={() => setStep("payment")}>Proceed to Payment</Button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {step === "payment" && (
+          <div className="flex flex-col gap-4">
+            <p className="text-sm" style={{ color: T.mutedFg }}>Select payment for ETB {cartTotal.toFixed(0)}</p>
+            <div className="space-y-2">
+              {allPaymentMethods.map((pm) => (
+                <button key={pm.id} onClick={() => setPayment(pm.id === payment ? null : pm.id)} className="w-full flex items-center gap-3 p-3 rounded-xl transition-all text-left" style={{ border: `2px solid ${payment === pm.id ? T.primary : T.border}`, background: payment === pm.id ? T.secondary : "transparent" }}>
+                  <span className="w-3 h-3 rounded-full shrink-0" style={{ background: pm.color }} />
+                  <div className="flex-1"><p className="font-semibold text-sm">{pm.name}</p><p className="text-xs font-mono" style={{ color: T.mutedFg }}>{pm.account}</p></div>
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-3">
+              <Button T={T} variant="outline" className="flex-1" onClick={() => setStep("cart")}>Back</Button>
+              <Button T={T} className="flex-1" onClick={() => setStep("confirm")}>Continue</Button>
+            </div>
+          </div>
+        )}
+
+        {step === "confirm" && (
+          <div className="flex flex-col gap-4">
+            <div className="rounded-xl p-4 space-y-2" style={{ background: T.secondary }}>
+              <p className="text-sm font-semibold">Order Summary — Table {tableId}</p>
+              {cart.map((item) => <div key={item.menuItemId} className="flex justify-between text-sm"><span>{item.nameEn} x{item.quantity}</span><span>ETB {(item.price * item.quantity).toFixed(0)}</span></div>)}
+              <div className="pt-2 flex justify-between font-bold" style={{ borderTop: `1px solid ${T.border}` }}><span>Total</span><span style={{ color: T.accent }}>ETB {cartTotal.toFixed(0)}</span></div>
+              <p className="text-xs pt-1" style={{ color: T.mutedFg }}>Payment: {selectedPmLabel}</p>
+            </div>
+            <div className="flex gap-3">
+              <Button T={T} variant="outline" className="flex-1" onClick={() => setStep("payment")}>Back</Button>
+              <Button T={T} className="flex-1" onClick={placeOrder}>Place Order</Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal T={T} open={sentimentOpen} onClose={() => setSentimentOpen(false)} title="How was your experience?" maxW="max-w-sm">
+        <div className="text-center">
+          <p className="text-sm mb-4" style={{ color: T.mutedFg }}>Tap to rate your visit at ELGA CAFE</p>
+          <div className="flex justify-center gap-4 mb-4">
+            {SENTIMENT_OPTIONS.map((s) => (
+              <button key={s.emoji} onClick={() => { onAddSentiment(s.emoji, tableId, trackedOrder?.id ?? null); setSentimentOpen(false); }} className="text-4xl hover:scale-125 active:scale-110 transition-transform">{s.emoji}</button>
+            ))}
+          </div>
+          <button onClick={() => setSentimentOpen(false)} className="text-xs underline" style={{ color: T.mutedFg }}>Skip</button>
+        </div>
+      </Modal>
+
+      <IsraelChat T={T} />
+    </div>
+  );
+}
+
+/* ============================== STAFF: ORDER QUEUE ============================== */
+
+function OrderQueue({ orders, onAdvance, T }) {
+  const [filter, setFilter] = useState("all");
+  const counts = { pending: 0, preparing: 0, ready: 0 };
+  for (const o of orders) if (counts[o.status] !== undefined) counts[o.status] += 1;
+  const filtered = filter === "all" ? orders : orders.filter((o) => o.status === filter);
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center gap-2 text-sm">
+        <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: "#16a34a" }} />
+        <span style={{ color: T.mutedFg }}>Live — orders appear instantly</span>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <StatCard T={T} label="Pending" value={counts.pending} icon={<Clock size={12} />} />
+        <StatCard T={T} label="Preparing" value={counts.preparing} icon={<Coffee size={12} />} />
+        <StatCard T={T} label="Ready" value={counts.ready} icon={<Check size={12} />} />
+      </div>
+
+      <div className="flex gap-2 flex-wrap">
+        {[["all", `All (${orders.length})`], ["pending", "Pending"], ["preparing", "Preparing"], ["ready", "Ready"]].map(([id, label]) => (
+          <button key={id} onClick={() => setFilter(id)} className="text-xs font-semibold px-3.5 py-1.5 rounded-full flex items-center gap-1.5" style={filter === id ? { background: T.primary, color: T.primaryFg } : { background: T.sidebarAccent, color: T.fg }}>
+            {id !== "all" && <span className="w-2 h-2 rounded-full" style={{ background: STATUS_INFO[id].dot }} />}
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="rounded-xl py-16 flex flex-col items-center gap-2" style={{ background: T.card, border: `1px solid ${T.border}` }}>
+          <Clock size={28} style={{ color: T.mutedFg, opacity: 0.5 }} />
+          <p className="font-semibold text-sm">No orders yet</p>
+          <p className="text-xs" style={{ color: T.mutedFg }}>Waiting for new orders…</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {[...filtered].reverse().map((o) => {
+            const idx = STATUS_FLOW.indexOf(o.status);
+            const next = STATUS_FLOW[idx + 1];
+            return (
+              <div key={o.id} className="rounded-xl p-4" style={{ background: T.card, border: `1px solid ${T.border}` }}>
+                <div className="flex items-center justify-between mb-2">
+                  <div>
+                    <p className="font-semibold text-sm">Order #{o.id} · Table {o.tableId}</p>
+                    <p className="text-xs" style={{ color: T.mutedFg }}>{formatEthTime(new Date(o.createdAt))} · {o.paymentMethod || "no payment selected"}</p>
+                  </div>
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full text-white" style={{ background: STATUS_INFO[o.status].dot }}>{STATUS_INFO[o.status].label}</span>
+                </div>
+                <div className="text-sm space-y-0.5 mb-3">
+                  {o.items.map((it) => <div key={it.menuItemId} className="flex justify-between"><span>{it.nameEn} x{it.quantity}</span><span style={{ color: T.mutedFg }}>ETB {(it.unitPrice * it.quantity).toFixed(0)}</span></div>)}
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-sm" style={{ color: T.accent }}>ETB {o.totalAmount.toFixed(0)}</span>
+                  {next ? <Button T={T} variant="accent" onClick={() => onAdvance(o.id)}>Mark {STATUS_INFO[next].label}</Button> : <span className="text-xs flex items-center gap-1" style={{ color: T.mutedFg }}><Check size={14} /> Complete</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================== STAFF: ANALYTICS ============================== */
+
+function AnalyticsHub({ orders, sentimentLogs, menuItems, onClearPeriod, T }) {
+  const [period, setPeriod] = useState("day");
+  const [confirmClear, setConfirmClear] = useState(false);
+  const PERIODS = [["day", "Today"], ["week", "This Week"], ["month", "This Month"], ["year", "This Year"]];
+
+  const since = periodStart(period);
+  const scoped = orders.filter((o) => new Date(o.createdAt) >= since);
+  const scopedSentiment = sentimentLogs.filter((s) => new Date(s.createdAt) >= since);
+
+  const totalRevenue = scoped.reduce((s, o) => s + o.totalAmount, 0);
+  const totalOrders = scoped.length;
+  const avg = totalOrders ? totalRevenue / totalOrders : 0;
+  const sentScores = scopedSentiment.map((s) => SENT_SCORE[s.emoji] || 0).filter(Boolean);
+  const sentAvg = sentScores.length ? (sentScores.reduce((a, b) => a + b, 0) / sentScores.length).toFixed(1) : "—";
+
+  // Status breakdown (all orders, not scoped)
+  const statusCounts = { pending: 0, preparing: 0, ready: 0, served: 0 };
+  for (const o of orders) if (statusCounts[o.status] !== undefined) statusCounts[o.status]++;
+
+  // Revenue trend
+  const timeAgg = new Map();
+  for (const o of scoped) {
+    const bucket = period === "day" ? `${new Date(o.createdAt).getHours().toString().padStart(2, "0")}:00` : new Date(o.createdAt).toISOString().slice(0, 10);
+    const cur = timeAgg.get(bucket) || { date: bucket, revenue: 0 };
+    cur.revenue += o.totalAmount;
+    timeAgg.set(bucket, cur);
+  }
+  const revenueTrend = Array.from(timeAgg.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+  // Best selling items (qty)
+  const itemQty = new Map();
+  const itemRev = new Map();
+  for (const o of scoped) for (const it of o.items) {
+    itemQty.set(it.menuItemId, { name: it.nameEn, qty: (itemQty.get(it.menuItemId)?.qty || 0) + it.quantity });
+    itemRev.set(it.menuItemId, { name: it.nameEn, revenue: (itemRev.get(it.menuItemId)?.revenue || 0) + it.quantity * it.unitPrice });
+  }
+  const topByQty = Array.from(itemQty.values()).sort((a, b) => b.qty - a.qty).slice(0, 5);
+  const topByRev = Array.from(itemRev.values()).sort((a, b) => b.revenue - a.revenue).slice(0, 5);
+
+  // Revenue by category (donut)
+  const CAT_COLORS = ["#c8891a", "#16a34a", "#2563eb", "#9333ea", "#dc2626"];
+  const catAgg = new Map();
+  for (const o of scoped) for (const it of o.items) {
+    const cat = menuItems.find((m) => m.id === it.menuItemId)?.category || "Other";
+    catAgg.set(cat, (catAgg.get(cat) || 0) + it.quantity * it.unitPrice);
+  }
+  const donutData = Array.from(catAgg.entries()).map(([name, value]) => ({ name, value }));
+
+  // Hour / day heat
+  const hourAgg = new Array(24).fill(0).map((_, i) => ({ hour: `${i.toString().padStart(2, "0")}:00`, orders: 0 }));
+  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const dayAgg = dayNames.map((d) => ({ day: d, orders: 0 }));
+  for (const o of scoped) {
+    const dt = new Date(o.createdAt);
+    hourAgg[dt.getHours()].orders += 1;
+    dayAgg[dt.getDay()].orders += 1;
+  }
+
+  const insights = useMemo(() => computeInsights(scoped, scopedSentiment, menuItems), [scoped, scopedSentiment, menuItems]);
+
+  const Section = ({ icon, title, children }) => (
+    <div className="rounded-xl p-5" style={{ background: T.card, border: `1px solid ${T.border}` }}>
+      <p className="text-xs font-bold uppercase tracking-widest mb-4 flex items-center gap-1.5" style={{ color: T.accent }}>{icon} {title}</p>
+      {children}
+    </div>
+  );
+
+  const EmptyState = ({ label }) => (
+    <p className="text-sm text-center py-10" style={{ color: T.mutedFg }}>{label}</p>
+  );
+
+  const maxQty = Math.max(1, ...topByQty.map(i => i.qty));
+
+  return (
+    <div className="space-y-5">
+
+      {/* Period filter + clear */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex gap-2 flex-wrap">
+          {PERIODS.map(([id, label]) => (
+            <button key={id} onClick={() => setPeriod(id)} className="text-xs font-semibold px-3.5 py-1.5 rounded-full transition-all" style={period === id ? { background: T.primary, color: T.primaryFg } : { background: T.sidebarAccent, color: T.fg }}>{label}</button>
+          ))}
+        </div>
+        <Button T={T} variant="danger" className="text-xs px-3 py-1.5" onClick={() => setConfirmClear(true)}>
+          <Trash2 size={13} /> Clear — {PERIODS.find((p) => p[0] === period)[1]}
+        </Button>
+      </div>
+
+      {/* KPI row */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <StatCard T={T} icon={<TrendingUp size={12} />} label="Revenue" value={`ETB ${totalRevenue.toFixed(0)}`} sub={PERIODS.find((p) => p[0] === period)[1]} accentColor={T.accent} />
+        <StatCard T={T} icon={<ShoppingBag size={12} />} label="Orders" value={totalOrders} sub="Total placed" />
+        <StatCard T={T} icon={<BarChart3 size={12} />} label="Avg Order" value={`ETB ${avg.toFixed(0)}`} sub="Per order" />
+        <StatCard T={T} icon={<Heart size={12} />} label="Sentiment" value={sentAvg} sub={`${scopedSentiment.length} ratings`} />
+      </div>
+
+      {/* BEST SELLING + REVENUE BY CATEGORY side-by-side */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <Section icon={<span>☆</span>} title="Best Selling Items">
+          {topByQty.length === 0 ? <EmptyState label="No sales yet" /> : (
+            <div style={{ height: 220 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={topByQty} layout="vertical" margin={{ left: 10, right: 20, top: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={T.border} horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 10, fill: T.mutedFg }} allowDecimals={false} />
+                  <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: T.fg }} width={70} />
+                  <Tooltip contentStyle={{ background: T.card, border: `1px solid ${T.border}`, fontSize: 12 }} formatter={(v) => [`${v} sold`, "Qty"]} />
+                  <Bar dataKey="qty" fill="#16a34a" radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </Section>
+
+        <Section icon={<span>◈</span>} title="Revenue by Category">
+          {donutData.length === 0 ? <EmptyState label="No data yet" /> : (
+            <div style={{ height: 220 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={donutData} cx="50%" cy="45%" innerRadius="52%" outerRadius="78%" paddingAngle={3} dataKey="value">
+                    {donutData.map((_, i) => <Cell key={i} fill={CAT_COLORS[i % CAT_COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip contentStyle={{ background: T.card, border: `1px solid ${T.border}`, fontSize: 12 }} formatter={(v) => [`ETB ${v.toFixed(0)}`, "Revenue"]} />
+                  <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11, color: T.fg }} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </Section>
+      </div>
+
+      {/* Revenue Trend */}
+      <Section icon={<TrendingUp size={13} />} title="Revenue Trend">
+        {revenueTrend.length === 0 ? <EmptyState label="No revenue yet" /> : (
+          <div style={{ height: 200 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={revenueTrend}>
+                <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
+                <XAxis dataKey="date" tick={{ fontSize: 10, fill: T.mutedFg }} />
+                <YAxis tick={{ fontSize: 10, fill: T.mutedFg }} />
+                <Tooltip contentStyle={{ background: T.card, border: `1px solid ${T.border}`, fontSize: 12 }} formatter={(v) => [`ETB ${v.toFixed(0)}`, "Revenue"]} />
+                <Line type="monotone" dataKey="revenue" stroke={T.accent} strokeWidth={2.5} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </Section>
+
+      {/* Busiest Hours + Peak Days */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <Section icon={<Clock size={13} />} title="Busiest Hours">
+          <div style={{ height: 200 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={hourAgg}>
+                <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
+                <XAxis dataKey="hour" tick={{ fontSize: 9, fill: T.mutedFg }} interval={2} />
+                <YAxis tick={{ fontSize: 10, fill: T.mutedFg }} allowDecimals={false} />
+                <Tooltip contentStyle={{ background: T.card, border: `1px solid ${T.border}`, fontSize: 12 }} />
+                <Bar dataKey="orders" fill={T.accent} radius={[3, 3, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Section>
+        <Section icon={<BarChart3 size={13} />} title="Peak Days">
+          <div style={{ height: 200 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={dayAgg}>
+                <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
+                <XAxis dataKey="day" tick={{ fontSize: 11, fill: T.mutedFg }} />
+                <YAxis tick={{ fontSize: 10, fill: T.mutedFg }} allowDecimals={false} />
+                <Tooltip contentStyle={{ background: T.card, border: `1px solid ${T.border}`, fontSize: 12 }} />
+                <Bar dataKey="orders" fill={T.primary} radius={[3, 3, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Section>
+      </div>
+
+      {/* Smart Insights */}
+      <Section icon={<Sparkles size={13} />} title="Smart Insights">
+        <ul className="space-y-3">
+          {insights.map((line, i) => (
+            <li key={i} className="flex gap-3 items-start text-sm p-3 rounded-lg" style={{ background: T.secondary }}>
+              <span className="mt-0.5 shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold" style={{ background: T.accent, color: T.accentFg }}>{i + 1}</span>
+              <span>{line}</span>
+            </li>
+          ))}
+        </ul>
+      </Section>
+
+      {/* ── STATUS BREAKDOWN ── at the end as requested */}
+      <Section icon={<BarChart3 size={13} />} title="Status Breakdown">
+        <div className="grid grid-cols-4 gap-3">
+          {[
+            { label: "Pending",   key: "pending",   color: "#d97706" },
+            { label: "Preparing", key: "preparing", color: "#2563eb" },
+            { label: "Ready",     key: "ready",     color: "#16a34a" },
+            { label: "Served",    key: "served",    color: T.mutedFg },
+          ].map(({ label, key, color }) => (
+            <div key={key} className="rounded-xl p-4 text-center" style={{ background: T.secondary }}>
+              <p className="text-2xl font-bold" style={{ fontFamily: SERIF, color: T.fg }}>{statusCounts[key]}</p>
+              <p className="text-xs mt-1 font-medium" style={{ color }}>{label}</p>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      {/* ── TOP ITEMS — REVENUE ── at the end as requested */}
+      <Section icon={<span>☆</span>} title="Top Items — Revenue">
+        {topByRev.length === 0 ? <EmptyState label="No sales yet" /> : (
+          <div className="space-y-2.5">
+            {topByRev.map((item, i) => {
+              const maxRev = topByRev[0].revenue;
+              const pct = Math.round((item.revenue / maxRev) * 100);
+              return (
+                <div key={item.name}>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="flex items-center gap-1.5 font-medium">
+                      <span className="text-xs font-bold w-4" style={{ color: T.accent }}>#{i + 1}</span>
+                      {item.name}
+                    </span>
+                    <span className="font-semibold" style={{ color: T.accent }}>ETB {item.revenue.toFixed(0)}</span>
+                  </div>
+                  <div className="h-2 rounded-full overflow-hidden" style={{ background: T.muted }}>
+                    <div className="h-2 rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${T.accent}, #c8891a)` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Section>
+
+      <ConfirmModal
+        T={T} open={confirmClear} onClose={() => setConfirmClear(false)}
+        title={`Clear ${PERIODS.find((p) => p[0] === period)[1]}'s data?`}
+        message="This permanently removes orders and sentiment logs from the selected period. This can't be undone."
+        onConfirm={() => onClearPeriod(since)}
+      />
+    </div>
+  );
+}
+
+/* ============================== STAFF: MENU EDIT ============================== */
+
+function ItemFormModal({ open, onClose, onSave, initial, T }) {
+  const [form, setForm] = useState(initial);
+  const fileRef = useRef(null);
+  useEffect(() => { setForm(initial); }, [initial, open]);
+
+  function handleImageFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => setForm((f) => ({ ...f, imageUrl: ev.target.result }));
+    reader.readAsDataURL(file);
+  }
+
+  const DEFAULT_IMG = "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?w=400";
+  const preview = form.imageUrl || DEFAULT_IMG;
+
+  return (
+    <Modal T={T} open={open} onClose={onClose} title={initial.id ? "Edit Item" : "Add Item"}>
+      <div className="space-y-3">
+
+        {/* Image picker */}
+        <div className="flex gap-3 items-start">
+          <div
+            className="w-20 h-20 rounded-xl overflow-hidden shrink-0 cursor-pointer relative group"
+            style={{ background: T.muted, border: `2px dashed ${T.border}` }}
+            onClick={() => fileRef.current?.click()}
+          >
+            {preview && <img src={preview} alt="preview" className="w-full h-full object-cover" onError={(e) => { e.target.style.display = "none"; }} />}
+            <div className="absolute inset-0 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity" style={{ background: "rgba(0,0,0,0.4)" }}>
+              <Plus size={20} className="text-white" />
+              <span className="text-white text-[10px] font-semibold mt-0.5">Change</span>
+            </div>
+          </div>
+          <div className="flex-1 space-y-1.5">
+            <p className="text-xs font-semibold" style={{ color: T.mutedFg }}>Item Image</p>
+            <button
+              onClick={() => fileRef.current?.click()}
+              className="w-full text-xs font-medium rounded-lg px-3 py-2 text-left flex items-center gap-2"
+              style={{ background: T.secondary, border: `1px solid ${T.border}`, color: T.fg }}
+            >
+              <Plus size={13} /> Upload from device
+            </button>
+            <input
+              placeholder="…or paste image URL"
+              value={form.imageUrl?.startsWith("data:") ? "" : (form.imageUrl || "")}
+              onChange={(e) => setForm((f) => ({ ...f, imageUrl: e.target.value }))}
+              className="w-full text-xs rounded-lg px-3 py-2"
+              style={{ background: T.secondary, border: `1px solid ${T.border}`, color: T.fg }}
+            />
+          </div>
+          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleImageFile} />
+        </div>
+
+        <input placeholder="Name (English)" value={form.nameEn} onChange={(e) => setForm({ ...form, nameEn: e.target.value })} className="w-full text-sm rounded-md px-3 py-2" style={{ background: T.secondary, border: `1px solid ${T.border}`, color: T.fg }} />
+        <input placeholder="Name (Amharic)" value={form.nameAm} onChange={(e) => setForm({ ...form, nameAm: e.target.value })} className="w-full text-sm rounded-md px-3 py-2" style={{ background: T.secondary, border: `1px solid ${T.border}`, color: T.fg }} />
+        <input placeholder="Description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="w-full text-sm rounded-md px-3 py-2" style={{ background: T.secondary, border: `1px solid ${T.border}`, color: T.fg }} />
+        <div className="grid grid-cols-2 gap-2">
+          <input placeholder="Price (ETB)" type="number" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} className="text-sm rounded-md px-3 py-2" style={{ background: T.secondary, border: `1px solid ${T.border}`, color: T.fg }} />
+          <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className="text-sm rounded-md px-3 py-2" style={{ background: T.secondary, border: `1px solid ${T.border}`, color: T.fg }}>
+            {["Coffee", "Drinks", "Food", "Dessert"].map((c) => <option key={c}>{c}</option>)}
+          </select>
+        </div>
+        <Button T={T} className="w-full" onClick={() => { if (!form.nameEn || !form.price) return; onSave(form); onClose(); }}>Save Item</Button>
+      </div>
+    </Modal>
+  );
+}
+
+function MenuEdit({ menuItems, onToggle, onUpdatePrice, onSave, onDelete, T }) {
+  const [category, setCategory] = useState("All");
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [deleting, setDeleting] = useState(null);
+  const categories = ["All", ...Array.from(new Set(menuItems.map((m) => m.category)))];
+  const visible = category === "All" ? menuItems : menuItems.filter((m) => m.category === category);
+  const blank = { nameEn: "", nameAm: "", description: "", price: "", category: "Coffee" };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="font-semibold text-sm" style={{ color: T.mutedFg }}>Menu Items ({menuItems.length})</p>
+        <Button T={T} onClick={() => { setEditing(null); setFormOpen(true); }}><Plus size={14} /> Add Item</Button>
+      </div>
+
+      <div className="flex gap-2 flex-wrap">
+        {categories.map((c) => (
+          <button key={c} onClick={() => setCategory(c)} className="text-xs font-semibold px-3.5 py-1.5 rounded-full" style={category === c ? { background: T.primary, color: T.primaryFg } : { background: T.sidebarAccent, color: T.fg }}>{c}</button>
+        ))}
+      </div>
+
+      <div className="rounded-xl overflow-hidden" style={{ background: T.card, border: `1px solid ${T.border}` }}>
+        {visible.map((item, i) => (
+          <div key={item.id} className="flex items-center gap-3 p-3" style={i > 0 ? { borderTop: `1px solid ${T.border}` } : undefined}>
+            <img src={item.imageUrl} className="w-10 h-10 rounded-lg object-cover shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">{item.nameEn} <span className="text-xs" style={{ color: T.mutedFg }}>({item.category})</span></p>
+            </div>
+            <span className="text-xs" style={{ color: T.mutedFg }}>ETB</span>
+            <input type="number" value={item.price} onChange={(e) => onUpdatePrice(item.id, Number(e.target.value))} className="w-16 text-sm rounded-md px-2 py-1" style={{ background: T.secondary, border: `1px solid ${T.border}` }} />
+            <Switch T={T} on={item.available} onClick={() => onToggle(item.id)} />
+            <button onClick={() => { setEditing(item); setFormOpen(true); }} style={{ color: T.mutedFg }}><Pencil size={15} /></button>
+            <button onClick={() => setDeleting(item)} style={{ color: T.destructive }}><Trash2 size={15} /></button>
+          </div>
+        ))}
+        {visible.length === 0 && <p className="text-sm text-center py-10" style={{ color: T.mutedFg }}>No items in this category.</p>}
+      </div>
+
+      <ItemFormModal T={T} open={formOpen} onClose={() => setFormOpen(false)} initial={editing || blank} onSave={(form) => onSave(editing?.id, form)} />
+      <ConfirmModal T={T} open={!!deleting} onClose={() => setDeleting(null)} title="Delete this item?" message={`"${deleting?.nameEn}" will be removed from the menu permanently.`} onConfirm={() => onDelete(deleting.id)} />
+    </div>
+  );
+}
+
+/* ============================== STAFF: SENTIMENT ============================== */
+
+function SentimentLogs({ logs, onClear, T }) {
+  const [confirmClear, setConfirmClear] = useState(false);
+  const counts = SENTIMENT_OPTIONS.map((s) => ({ ...s, count: logs.filter((l) => l.emoji === s.emoji).length }));
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm" style={{ color: T.mutedFg }}>{logs.length} feedback entries</p>
+        <Button T={T} variant="danger" className="text-xs px-3 py-1.5" onClick={() => setConfirmClear(true)}><Trash2 size={13} /> Clear All</Button>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {counts.map((s) => (
+          <div key={s.emoji} className="rounded-xl p-4 flex flex-col items-center gap-1" style={{ background: T.card, border: `1px solid ${T.border}` }}>
+            <span className="text-2xl">{s.emoji}</span>
+            <p className="text-2xl font-bold" style={{ fontFamily: SERIF }}>{s.count}</p>
+            <p className="text-xs" style={{ color: T.mutedFg }}>{s.label}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-xl overflow-hidden" style={{ background: T.card, border: `1px solid ${T.border}` }}>
+        <div className="grid grid-cols-4 px-4 py-2.5 text-xs font-semibold uppercase tracking-wide" style={{ background: T.sidebarAccent, color: T.mutedFg }}>
+          <span>Emoji</span><span>Table</span><span>Order</span><span>Time</span>
+        </div>
+        {logs.length === 0 ? (
+          <p className="text-sm text-center py-10" style={{ color: T.mutedFg }}>No feedback submitted yet.</p>
+        ) : (
+          [...logs].reverse().map((l) => (
+            <div key={l.id} className="grid grid-cols-4 px-4 py-3 text-sm items-center" style={{ borderTop: `1px solid ${T.border}` }}>
+              <span className="text-xl">{l.emoji}</span>
+              <span>Table {l.tableId}</span>
+              <span style={{ color: T.mutedFg }}>{l.orderId ? `#${l.orderId}` : "—"}</span>
+              <span className="text-xs" style={{ color: T.mutedFg }}>{formatEthDateTime(new Date(l.createdAt))}</span>
+            </div>
+          ))
+        )}
+      </div>
+
+      <ConfirmModal T={T} open={confirmClear} onClose={() => setConfirmClear(false)} title="Clear all feedback?" message="All sentiment logs will be permanently deleted." onConfirm={onClear} />
+    </div>
+  );
+}
+
+/* ============================== STAFF: QR GENERATOR ============================== */
+
+function QRGenerator({ T }) {
+  const QUICK_TABLES = ["T1", "T2", "T3", "T4", "T5", "T6"];
+  const [tableInput, setTableInput] = useState("T1");
+  const [generated, setGenerated] = useState("T1");
+  const [justGenerated, setJustGenerated] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [trimmedNotice, setTrimmedNotice] = useState(false);
+
+  const BASE_URL = (() => {
+    const base = window.location.href.split("?")[0];
+    return `${base}?table=`;
+  })();
+  const url = `${BASE_URL}${generated}`;
+
+  function fitsQR(table) {
+    return new TextEncoder().encode(`${BASE_URL}${table}`).length <= QR_MAX_PAYLOAD_BYTES;
+  }
+
+  function generate(table) {
+    let t = (table || tableInput || "T1").trim() || "T1";
+    let trimmed = false;
+    while (!fitsQR(t) && t.length > 1) { t = t.slice(0, -1); trimmed = true; }
+    setTableInput(t);
+    setGenerated(t);
+    setTrimmedNotice(trimmed);
+    setJustGenerated(true);
+    setTimeout(() => setJustGenerated(false), 700);
+  }
+
+  function copyLink() {
+    if (navigator?.clipboard) navigator.clipboard.writeText(url).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1600);
+  }
+
+  function downloadPng() {
+    try {
+      const matrix = generateQRMatrix(url);
+      const dataUrl = qrMatrixToPngDataUrl(matrix, { scale: 12, dark: "#372315", light: "#fffcf5", accent: "#e7b008", accentFg: "#26170d", badgeText: generated.length <= 4 ? generated : "" });
+      const a = document.createElement("a");
+      a.href = dataUrl;
+      a.download = `table-${generated}-qr.png`;
+      a.click();
+    } catch {
+      // payload too long for current table id — shouldn't happen since generate() auto-trims
+    }
+  }
+
+  return (
+    <div className="space-y-5 max-w-md">
+      <div>
+        <label className="text-xs font-semibold uppercase tracking-wide" style={{ color: T.mutedFg }}>Table Identifier</label>
+        <div className="flex gap-2 mt-1.5">
+          <input
+            value={tableInput}
+            onChange={(e) => setTableInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && generate()}
+            maxLength={40}
+            className="flex-1 text-sm rounded-lg px-3 py-2"
+            style={{ background: T.secondary, border: `1px solid ${T.border}` }}
+          />
+          <Button T={T} onClick={() => generate()}><QrCode size={14} /> Generate</Button>
+        </div>
+        <div className="flex gap-1.5 flex-wrap mt-2.5">
+          {QUICK_TABLES.map((t) => (
+            <button
+              key={t}
+              onClick={() => generate(t)}
+              className="text-xs font-semibold px-2.5 py-1 rounded-full transition-all"
+              style={generated === t ? { background: T.primary, color: T.primaryFg } : { background: T.sidebarAccent, color: T.mutedFg }}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+        {trimmedNotice && <p className="text-[11px] mt-1.5" style={{ color: T.destructive }}>Identifier was too long to fit in a scannable code, so it was shortened to "{generated}".</p>}
+      </div>
+
+      <div
+        className="rounded-2xl p-7 flex flex-col items-center gap-3 relative overflow-hidden transition-all duration-700"
+        style={{
+          background: `radial-gradient(circle at 50% 0%, ${T.secondary}, ${T.card} 70%)`,
+          border: `1px solid ${T.border}`,
+          boxShadow: justGenerated ? `0 0 0 4px ${T.accent}55, 0 12px 28px -8px rgba(0,0,0,0.25)` : "0 12px 28px -10px rgba(0,0,0,0.18)",
+        }}
+      >
+        <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-widest" style={{ color: T.accent }}>
+          <Sparkles size={12} /> Scan to order
+        </div>
+
+        <div
+          className="relative p-3 rounded-xl transition-transform duration-500"
+          style={{ background: "#fffcf5", boxShadow: "0 4px 16px -4px rgba(55,35,21,0.25)", transform: justGenerated ? "scale(1.03)" : "scale(1)" }}
+        >
+          <QRCodeSVG value={url} size={220} dark="#372315" light="#fffcf5" />
+          {generated.length <= 4 && (
+            <span
+              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-12 h-12 rounded-full flex flex-col items-center justify-center text-[10px] font-bold leading-none"
+              style={{ background: `linear-gradient(135deg, ${T.accent}, #c8891a)`, color: T.accentFg, border: "3px solid #fffcf5", boxShadow: "0 2px 8px rgba(0,0,0,0.25)" }}
+            >
+              <Coffee size={13} className="mb-0.5" />
+              {generated}
+            </span>
+          )}
+        </div>
+
+        <p className="font-bold text-xl mt-1" style={{ fontFamily: SERIF }}>Table {generated}</p>
+
+        <button onClick={copyLink} className="flex items-center gap-1.5 text-xs font-mono rounded-full px-3 py-1.5 transition-colors break-all text-center" style={{ background: T.secondary, color: T.mutedFg }}>
+          {url}
+          {copied ? <Check size={12} className="shrink-0" style={{ color: "#16a34a" }} /> : <Copy size={12} className="shrink-0" />}
+        </button>
+        {copied && <span className="text-[11px] font-semibold" style={{ color: "#16a34a" }}>Link copied!</span>}
+
+        <div className="flex gap-2 w-full mt-2">
+          <Button T={T} className="flex-1" onClick={downloadPng}><Download size={14} /> Download QR</Button>
+          <Button T={T} variant="ghost" className="flex-1" onClick={copyLink}><Copy size={14} /> Copy Link</Button>
+        </div>
+      </div>
+
+      <p className="text-xs text-center" style={{ color: T.mutedFg }}>Print this and place it on the table — guests scan it to open the menu straight to Table {generated}. The code is generated entirely on-device, so it works even offline.</p>
+    </div>
+  );
+}
+
+/* ============================== STAFF: SETTINGS ============================== */
+
+function SettingsPage({ paymentMethods, onSave, T }) {
+  const [draft, setDraft] = useState(paymentMethods);
+  useEffect(() => setDraft(paymentMethods), [paymentMethods]);
+  const [editing, setEditing] = useState(null);
+  const [deleting, setDeleting] = useState(null);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(paymentMethods);
+  const COLORS = ["#2563eb", "#16a34a", "#ea580c", "#9333ea", "#dc2626"];
+
+  function update(id, patch) { setDraft((d) => d.map((p) => (p.id === id ? { ...p, ...patch } : p))); }
+
+  return (
+    <div className="space-y-4 max-w-xl">
+      <div className="rounded-xl p-5" style={{ background: T.card, border: `1px solid ${T.border}` }}>
+        <div className="flex items-center justify-between mb-1">
+          <p className="font-bold" style={{ fontFamily: SERIF }}>Payment Methods</p>
+          <div className="flex gap-2">
+            <Button T={T} variant="ghost" className="text-xs px-3 py-1.5" onClick={() => { const id = `pm-${nextId()}`; setDraft((d) => [...d, { id, name: "New Method", account: "", color: COLORS[d.length % COLORS.length] }]); setEditing(id); }}><Plus size={13} /> Add</Button>
+            <Button T={T} className="text-xs px-3 py-1.5" disabled={!dirty} onClick={() => onSave(draft)}><Check size={13} /> Save</Button>
+          </div>
+        </div>
+        <p className="text-xs mb-4" style={{ color: T.mutedFg }}>Manage payment options shown to customers at checkout</p>
+
+        <div className="space-y-2">
+          {draft.map((pm) => (
+            <div key={pm.id} className="rounded-xl p-3.5" style={{ background: T.secondary }}>
+              {editing === pm.id ? (
+                <div className="space-y-2">
+                  <input value={pm.name} onChange={(e) => update(pm.id, { name: e.target.value })} placeholder="Name" className="w-full text-sm rounded-md px-2.5 py-1.5" style={{ background: T.card, border: `1px solid ${T.border}` }} />
+                  <input value={pm.account} onChange={(e) => update(pm.id, { account: e.target.value })} placeholder="Account / number" className="w-full text-sm rounded-md px-2.5 py-1.5 font-mono" style={{ background: T.card, border: `1px solid ${T.border}` }} />
+                  <div className="flex justify-end"><Button T={T} variant="ghost" className="text-xs px-3 py-1" onClick={() => setEditing(null)}>Done</Button></div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <span className="w-3 h-3 rounded-full shrink-0" style={{ background: pm.color }} />
+                  <div className="flex-1 min-w-0"><p className="font-semibold text-sm">{pm.name}</p><p className="text-xs font-mono" style={{ color: T.mutedFg }}>{pm.account}</p></div>
+                  <button onClick={() => setEditing(pm.id)} style={{ color: T.mutedFg }}><Pencil size={15} /></button>
+                  <button onClick={() => setDeleting(pm)} style={{ color: T.destructive }}><Trash2 size={15} /></button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <ConfirmModal T={T} open={!!deleting} onClose={() => setDeleting(null)} title="Remove this payment method?" message={`"${deleting?.name}" will no longer be offered at checkout.`} onConfirm={() => setDraft((d) => d.filter((p) => p.id !== deleting.id))} />
+    </div>
+  );
+}
+
+/* ============================== STAFF TERMINAL SHELL ============================== */
+
+function StaffTerminal({ menuItems, orders, sentimentLogs, paymentMethods, dark, onToggleDark, onBack, handlers, T }) {
+  const [tab, setTab] = useState("orders");
+  const TABS = [
+    { id: "orders", label: "Order Queue", icon: <ClipboardList size={17} /> },
+    { id: "analytics", label: "Analytics", icon: <BarChart3 size={17} /> },
+    { id: "menu", label: "Menu Edit", icon: <UtensilsCrossed size={17} /> },
+    { id: "sentiment", label: "Sentiment", icon: <MessageSquare size={17} /> },
+    { id: "qr", label: "QR Generator", icon: <QrCode size={17} /> },
+    { id: "settings", label: "Settings", icon: <SettingsIcon size={17} /> },
+  ];
+
+  return (
+    <div className="min-h-screen flex" style={{ background: T.bg, color: T.fg, fontFamily: SANS }}>
+      <aside className="w-56 shrink-0 hidden md:flex flex-col" style={{ background: T.sidebar, borderRight: `1px solid ${T.border}` }}>
+        <button onClick={onBack} className="px-5 py-5 text-left" style={{ borderBottom: `1px solid ${T.border}` }}>
+          <h1 className="font-bold text-lg" style={{ fontFamily: SERIF }}>ELGA CAFE</h1>
+          <p className="text-[10px] font-semibold tracking-[0.3em] mt-0.5 uppercase" style={{ color: T.mutedFg }}>Staff Terminal</p>
+        </button>
+        <nav className="flex-1 px-2 py-3 space-y-0.5">
+          {TABS.map((t) => (
+            <button key={t.id} onClick={() => setTab(t.id)} className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-all" style={tab === t.id ? { background: T.primary, color: T.primaryFg } : { color: T.mutedFg }}>
+              {t.icon}{t.label}
+            </button>
+          ))}
+        </nav>
+        <div className="px-3 py-4" style={{ borderTop: `1px solid ${T.border}` }}>
+          <button onClick={onToggleDark} className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium" style={{ color: T.mutedFg }}>
+            {dark ? <Sun size={16} /> : <Moon size={16} />}{dark ? "Light Mode" : "Dark Mode"}
+          </button>
+        </div>
+      </aside>
+
+      <div className="md:hidden fixed top-0 left-0 right-0 z-40" style={{ background: T.sidebar, borderBottom: `1px solid ${T.border}` }}>
+        <div className="flex items-center justify-between px-4 py-3">
+          <button onClick={onBack} className="flex items-center gap-2"><ArrowLeft size={16} /><h1 className="font-bold" style={{ fontFamily: SERIF }}>ELGA CAFE — Staff</h1></button>
+          <button onClick={onToggleDark} className="p-2 rounded-lg" style={{ color: T.mutedFg }}>{dark ? <Sun size={18} /> : <Moon size={18} />}</button>
+        </div>
+        <div className="flex overflow-x-auto px-3 pb-3 gap-1.5">
+          {TABS.map((t) => (
+            <button key={t.id} onClick={() => setTab(t.id)} className="shrink-0 flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-medium" style={tab === t.id ? { background: T.primary, color: T.primaryFg } : { background: T.sidebarAccent, color: T.fg }}>
+              {t.icon}{t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <main className="flex-1 overflow-auto">
+        <div className="max-w-4xl mx-auto px-5 pt-32 md:pt-8 pb-10">
+          <div className="mb-5">
+            <h2 className="font-bold text-2xl" style={{ fontFamily: SERIF }}>{TABS.find((t) => t.id === tab)?.label}</h2>
+            <p className="text-xs mt-0.5" style={{ color: T.mutedFg }}>ELGA CAFE · Dire Dawa, Ethiopia</p>
+          </div>
+          {tab === "orders" && <OrderQueue T={T} orders={orders} onAdvance={handlers.advanceOrder} />}
+          {tab === "analytics" && <AnalyticsHub T={T} orders={orders} sentimentLogs={sentimentLogs} menuItems={menuItems} onClearPeriod={handlers.clearPeriod} />}
+          {tab === "menu" && <MenuEdit T={T} menuItems={menuItems} onToggle={handlers.toggleAvailability} onUpdatePrice={handlers.updatePrice} onSave={handlers.saveMenuItem} onDelete={handlers.deleteMenuItem} />}
+          {tab === "sentiment" && <SentimentLogs T={T} logs={sentimentLogs} onClear={handlers.clearSentiment} />}
+          {tab === "qr" && <QRGenerator T={T} />}
+          {tab === "settings" && <SettingsPage T={T} paymentMethods={paymentMethods} onSave={handlers.savePaymentMethods} />}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+/* ===================================== APP ===================================== */
+
+export default function App() {
+  const [menuItems, setMenuItems] = useState(SEED_MENU);
+  const [orders, setOrders] = useState([]);
+  const [sentimentLogs, setSentimentLogs] = useState([]);
+  const [paymentMethods, setPaymentMethods] = useState(DEFAULT_PAYMENT_METHODS);
+  const [dark, setDark] = useState(false);
+
+  // If the URL contains ?table=X (i.e. customer scanned a QR), boot straight
+  // into the customer menu for that table — no landing screen needed.
+  const urlTable = useMemo(() => {
+    try { return new URLSearchParams(window.location.search).get("table"); } catch { return null; }
+  }, []);
+  const [view, setView] = useState(urlTable ? "customer" : "landing");
+  const [tableId, setTableId] = useState(urlTable || "T1");
+
+  const T = dark ? DARK : LIGHT;
+
+  const createOrder = useCallback((table, cart, paymentId) => {
+    const now = new Date().toISOString();
+    const order = {
+      id: nextId(),
+      tableId: table,
+      status: "pending",
+      totalAmount: cart.reduce((s, i) => s + i.price * i.quantity, 0),
+      paymentMethod: [...paymentMethods, CASH_METHOD].find((p) => p.id === paymentId)?.name || null,
+      createdAt: now,
+      updatedAt: now,
+      items: cart.map((i) => ({ menuItemId: i.menuItemId, nameEn: i.nameEn, nameAm: i.nameAm, quantity: i.quantity, unitPrice: i.price })),
+    };
+    setOrders((o) => [...o, order]);
+    return order;
+  }, [paymentMethods]);
+
+  const handlers = useMemo(() => ({
+    advanceOrder: (id) => setOrders((os) => os.map((o) => {
+      if (o.id !== id) return o;
+      const idx = STATUS_FLOW.indexOf(o.status);
+      return { ...o, status: STATUS_FLOW[idx + 1] || o.status, updatedAt: new Date().toISOString() };
+    })),
+    toggleAvailability: (id) => setMenuItems((items) => items.map((m) => (m.id === id ? { ...m, available: !m.available } : m))),
+    updatePrice: (id, price) => setMenuItems((items) => items.map((m) => (m.id === id ? { ...m, price } : m))),
+    saveMenuItem: (id, form) => setMenuItems((items) => {
+      const data = { nameEn: form.nameEn, nameAm: form.nameAm || form.nameEn, description: form.description || "", price: Number(form.price) || 0, category: form.category, imageUrl: form.imageUrl || "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?w=400" };
+      if (id) return items.map((m) => (m.id === id ? { ...m, ...data } : m));
+      return [...items, { id: nextId(), ...data, available: true }];
+    }),
+    deleteMenuItem: (id) => setMenuItems((items) => items.filter((m) => m.id !== id)),
+    clearSentiment: () => setSentimentLogs([]),
+    clearPeriod: (since) => {
+      setOrders((os) => os.filter((o) => new Date(o.createdAt) < since));
+      setSentimentLogs((s) => s.filter((l) => new Date(l.createdAt) < since));
+    },
+    savePaymentMethods: (methods) => setPaymentMethods(methods),
+  }), []);
+
+  function addSentiment(emoji, table, orderId) {
+    setSentimentLogs((s) => [...s, { id: nextId(), emoji, tableId: table, orderId, createdAt: new Date().toISOString() }]);
+  }
+
+  if (view === "landing") {
+    return <Landing T={T} onEnter={setView} />;
+  }
+  if (view === "customer") {
+    return (
+      <CustomerMenu
+        T={T} menuItems={menuItems} orders={orders} paymentMethods={paymentMethods}
+        tableId={tableId} onCreateOrder={createOrder} onAddSentiment={addSentiment}
+        onBack={() => setView("landing")}
+      />
+    );
+  }
+  return (
+    <StaffTerminal
+      T={T} menuItems={menuItems} orders={orders} sentimentLogs={sentimentLogs}
+      paymentMethods={paymentMethods} dark={dark} onToggleDark={() => setDark((d) => !d)}
+      onBack={() => setView("landing")} handlers={handlers}
+    />
+  );
+}
